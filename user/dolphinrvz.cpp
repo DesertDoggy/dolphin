@@ -200,10 +200,14 @@ int dolphinrvz_convert(const DolphinRvzConvertOptions* options)
 
     DolphinRvzProgressCb progress_cb = options->on_progress;
     void* user_data = options->user_data;
-    const DiscIO::CompressCB callback = [progress_cb, user_data](const std::string& text, float percent) {
+    bool cancelled = false;
+    const DiscIO::CompressCB callback = [progress_cb, user_data, &cancelled](const std::string& text, float percent) {
         if (!progress_cb)
             return true;
-        return progress_cb(text.c_str(), percent * 100.0f, user_data) != 0;
+        const bool keep_going = progress_cb(text.c_str(), percent * 100.0f, user_data) != 0;
+        if (!keep_going)
+            cancelled = true;
+        return keep_going;
     };
 
     bool success = false;
@@ -242,6 +246,11 @@ int dolphinrvz_convert(const DolphinRvzConvertOptions* options)
 
     if (!success)
     {
+        if (cancelled)
+        {
+            g_last_error = "cancelled by caller";
+            return -6;
+        }
         if (g_last_error.empty())
             g_last_error = "conversion failed";
         return -5;

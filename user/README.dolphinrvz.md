@@ -64,7 +64,8 @@ Header: `user/dolphinrvz.h`
   input/output/format, block size required and range-checked for GCZ/WIA/RVZ,
   compression method/level required and range-checked for WIA/RVZ, WIA rejects Zstd,
   RVZ rejects Purge). Returns 0 on success, negative on failure -- see
-  `dolphinrvz_get_last_error()`.
+  `dolphinrvz_get_last_error()`. Returns exactly -6 specifically when `on_progress`
+  returned 0 (the caller cancelled), distinguishable from every other failure.
 - `dolphinrvz_get_last_error()`
 - `dolphinrvz_get_allowed_compression_levels(compression, &min, &max)`
 
