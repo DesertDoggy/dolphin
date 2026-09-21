@@ -44,7 +44,17 @@ if(CMAKE_SYSTEM_NAME MATCHES "Windows")
   )
 endif()
 
+# Source/CMakeLists.txt sets CMAKE_CXX_STANDARD 23 (directory-scoped, non-MSVC) /
+# CMAKE_CXX_STANDARD 23 (MSVC) for everything under add_subdirectory(Source) -- same
+# out-of-subtree situation as the NOMINMAX/UNICODE defines above, so dolphinrvz needs its
+# own copy here too (confirmed directly: without this, dolphinrvz.cpp's includes of
+# DiscIO/WIABlob.h and Common/StringUtil.h fail to compile under GCC's default -std=gnu++20,
+# since MultithreadedCompressor.h's std::expected and StringUtil.h's std::to_underlying are
+# both C++23-only).
 set_target_properties(dolphinrvz PROPERTIES
+  CXX_STANDARD 23
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
 )

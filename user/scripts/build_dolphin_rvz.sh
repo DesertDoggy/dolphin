@@ -78,6 +78,15 @@ cmake_args=(
   -DCMAKE_BUILD_TYPE=Release
   -DCMAKE_PROJECT_INCLUDE="$user_dir/dolphinrvz_project_include.cmake"
   -DDOLPHINRVZ_USER_DIR="$user_dir"
+  # dolphinrvz links core/discio/uicommon etc as static libs into itself, a SHARED
+  # library (see dolphinrvz_target.cmake) -- unlike Dolphin's own normal build, where
+  # those static libs only ever feed the dolphin-emu executable and never need to be
+  # position-independent. Without this, thread_local statics (e.g. Core.cpp's
+  # tls_is_gpu_thread) get compiled with the "local-exec" TLS model, which ld then
+  # rejects when linking into a shared object (confirmed directly: "relocation
+  # R_X86_64_TPOFF32 ... can not be used when making a shared object"). Harmless on
+  # MSVC/Windows, which ignores this CMake variable.
+  -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 )
 
 # Locates the Visual Studio install root. Dolphin's own build is only ever tested
