@@ -186,6 +186,13 @@ DOLPHINRVZ_API int dolphinrvz_convert_from_source(const DolphinRvzConvertOptions
                                                   DolphinRvzDataCb on_input_data);
 
 /*
+ * Number of compression threads GCZ/WIA/RVZ creation uses from now on (process-wide, this
+ * library only); 0 = one per logical CPU (the default). Applies on Linux and macOS; ignored on
+ * Windows, where Dolphin's thread count can't be changed from outside.
+ */
+DOLPHINRVZ_API void dolphinrvz_set_compress_threads(uint32_t threads);
+
+/*
  * Random access to a disc image's plain (ISO) contents without converting it -- e.g.
  * reading a GC/Wii filesystem out of an RVZ. Each reader owns its own file handle and
  * decoder state; for parallel reads open one reader per thread. A single reader is not

@@ -7,18 +7,54 @@
 #include "dolphinrvz_internal.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "Common/FileUtil.h"
 #include "Common/IOFile.h"
 
 #include "DiscIO/Blob.h"
+
+// ---------------------------------------------------------------------------
+// Compressor thread count
+// ---------------------------------------------------------------------------
+//
+// DiscIO's MultithreadedCompressor (GCZ/WIA/RVZ creation) sizes its pool from
+// std::thread::hardware_concurrency(), with no setting. On toolchains where that function is
+// out of line in the C++ runtime (libstdc++, libc++), defining it here makes every call inside
+// this shared library bind to this definition at link time, so dolphinrvz_set_compress_threads
+// can choose the count without touching Dolphin's source. Hidden, so it never interposes on
+// other libraries in the process. MSVC's is inline and calls into its runtime DLL, so there the
+// setting is ignored.
+namespace
+{
+std::atomic<unsigned int> g_compress_threads{0};
+}
+
+#if !defined(_WIN32)
+#include <unistd.h>
+
+__attribute__((visibility("hidden"))) unsigned int std::thread::hardware_concurrency() noexcept
+{
+    const unsigned int forced = g_compress_threads.load(std::memory_order_relaxed);
+    if (forced)
+        return forced;
+    const long online = sysconf(_SC_NPROCESSORS_ONLN);
+    return online > 0 ? static_cast<unsigned int>(online) : 0;
+}
+#endif
+
+void dolphinrvz_set_compress_threads(uint32_t threads)
+{
+    g_compress_threads.store(threads, std::memory_order_relaxed);
+}
 
 namespace
 {

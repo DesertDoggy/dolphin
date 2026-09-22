@@ -98,3 +98,8 @@ set_target_properties(dolphinrvz_streaming PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/with_streaming
   ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/with_streaming
 )
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_options(dolphinrvz_streaming PRIVATE
+    "LINKER:--version-script=${DOLPHINRVZ_USER_DIR}/dolphinrvz_streaming.map")
+  set_property(TARGET dolphinrvz_streaming APPEND PROPERTY LINK_DEPENDS ${DOLPHINRVZ_USER_DIR}/dolphinrvz_streaming.map)
+endif()
