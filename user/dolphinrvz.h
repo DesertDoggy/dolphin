@@ -157,6 +157,35 @@ DOLPHINRVZ_API int dolphinrvz_convert_stream(const DolphinRvzConvertOptions* opt
                                              DolphinRvzDataCb on_input_data);
 
 /*
+ * A disc image (plain ISO bytes) supplied by the caller instead of a file. Give `read`
+ * (sequential), `read_at` (random access), or both; with both, `read_at` is used.
+ *
+ *   read:    copy up to `size` next bytes into buf; return the count (0 = end), <0 = error.
+ *   read_at: copy exactly `size` bytes at `offset` into buf; return 0, nonzero = error.
+ *            May be called from Dolphin's worker threads, but never concurrently.
+ */
+typedef struct {
+    uint64_t size;  /* exact plain size */
+    int64_t (*read)(void* user_data, void* buf, uint64_t size);
+    int (*read_at)(void* user_data, uint64_t offset, void* buf, uint64_t size);
+    void* user_data;
+} DolphinRvzSource;
+
+/*
+ * dolphinrvz_convert with the input from `source` (options->input_path is then only a name
+ * for on_input_data and may be NULL; options->scrub is not supported). on_input_data, if
+ * non-NULL, receives every input byte once, in order, as in dolphinrvz_convert_stream.
+ *
+ * GCZ/WIA/RVZ creation reads its input at arbitrary offsets, so a sequential-only source
+ * is first spooled to a temporary file (in options->user_dir, else the system temp
+ * directory), which is deleted afterwards; a read_at source is used directly.
+ * Returns as dolphinrvz_convert.
+ */
+DOLPHINRVZ_API int dolphinrvz_convert_from_source(const DolphinRvzConvertOptions* options,
+                                                  const DolphinRvzSource* source,
+                                                  DolphinRvzDataCb on_input_data);
+
+/*
  * Random access to a disc image's plain (ISO) contents without converting it -- e.g.
  * reading a GC/Wii filesystem out of an RVZ. Each reader owns its own file handle and
  * decoder state; for parallel reads open one reader per thread. A single reader is not

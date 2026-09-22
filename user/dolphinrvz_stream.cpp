@@ -7,7 +7,10 @@
 #include "dolphinrvz_internal.h"
 
 #include <algorithm>
+#include <chrono>
+#include <filesystem>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -237,11 +240,13 @@ int dolphinrvz_extract_stream(const char* input_path, const char* output_path, c
     return rc;
 }
 
-int dolphinrvz_convert_stream(const DolphinRvzConvertOptions* options, DolphinRvzDataCb on_input_data)
+namespace
 {
-    if (!options || !options->input_path)
-        return dolphinrvz_internal::Convert(options, nullptr, nullptr);  // reports the error
-
+// Convert with an InputTap on the input: `on_input_data` receives every input byte once, in
+// order. open_input: see dolphinrvz_internal::OpenInput (nullptr = options->input_path).
+int ConvertObserved(const DolphinRvzConvertOptions* options, DolphinRvzDataCb on_input_data,
+                    const dolphinrvz_internal::OpenInput& open_input)
+{
     // The relay records a stop request in `stopped`, which Convert polls at each progress
     // point (it can't be signalled from inside a read without faking a read error).
     bool stopped = false;
@@ -262,31 +267,163 @@ int dolphinrvz_convert_stream(const DolphinRvzConvertOptions* options, DolphinRv
         return 1;
     };
 
+    const std::string name = options->input_path ? options->input_path : "";
     std::unique_ptr<InputTap> tap;
     const auto wrap = [&](std::unique_ptr<DiscIO::BlobReader> inner) -> std::unique_ptr<DiscIO::BlobReader> {
-        tap = std::make_unique<InputTap>(options->input_path, inner->GetDataSize(), relay_cb, &relay);
+        tap = std::make_unique<InputTap>(name, inner->GetDataSize(), relay_cb, &relay);
         return std::make_unique<ObservingBlob>(std::move(inner), tap.get());
     };
 
-    const int rc = dolphinrvz_internal::Convert(options, wrap, &stopped);
+    const int rc = dolphinrvz_internal::Convert(options, wrap, &stopped, open_input);
     if (rc != 0 || !tap)
         return rc;
 
     // The observing reader died with Convert; deliver whatever the converter never read
     // from a fresh reader.
-    std::unique_ptr<DiscIO::BlobReader> tail = DiscIO::CreateBlobReader(options->input_path);
+    std::unique_ptr<DiscIO::BlobReader> tail =
+        open_input ? open_input() : DiscIO::CreateBlobReader(options->input_path);
     if (!tail)
     {
-        dolphinrvz_internal::SetLastError("The input file could not be reopened");
+        dolphinrvz_internal::SetLastError("The input could not be reopened");
         return -5;
     }
     tap->SetSource(tail.get());
     if (!tap->Finish())
     {
-        dolphinrvz_internal::SetLastError(stopped ? "stopped by data callback" : "Failed to read from the input file");
+        dolphinrvz_internal::SetLastError(stopped ? "stopped by data callback" : "Failed to read from the input");
         return stopped ? -6 : -5;
     }
     return 0;
+}
+
+// Plain-data BlobReader over a random-access DolphinRvzSource. Copies share one lock, since
+// Dolphin reads through several copies (volume, converter), partly from its own threads.
+class SourceBlob final : public DiscIO::BlobReader
+{
+public:
+    struct Shared
+    {
+        const DolphinRvzSource* source;
+        std::mutex mutex;
+    };
+
+    explicit SourceBlob(std::shared_ptr<Shared> shared) : m_shared(std::move(shared)) {}
+
+    DiscIO::BlobType GetBlobType() const override { return DiscIO::BlobType::PLAIN; }
+    std::unique_ptr<DiscIO::BlobReader> CopyReader() const override
+    {
+        return std::make_unique<SourceBlob>(m_shared);
+    }
+    u64 GetRawSize() const override { return m_shared->source->size; }
+    u64 GetDataSize() const override { return m_shared->source->size; }
+    DiscIO::DataSizeType GetDataSizeType() const override { return DiscIO::DataSizeType::Accurate; }
+    u64 GetBlockSize() const override { return 0; }
+    bool HasFastRandomAccessInBlock() const override { return true; }
+    std::string GetCompressionMethod() const override { return {}; }
+    std::optional<int> GetCompressionLevel() const override { return std::nullopt; }
+
+    bool Read(u64 offset, u64 size, u8* out_ptr) override
+    {
+        const DolphinRvzSource& src = *m_shared->source;
+        if (offset > src.size || size > src.size - offset)
+            return false;
+        std::lock_guard<std::mutex> lock(m_shared->mutex);
+        return size == 0 || src.read_at(src.user_data, offset, out_ptr, size) == 0;
+    }
+
+private:
+    std::shared_ptr<Shared> m_shared;
+};
+}  // namespace
+
+int dolphinrvz_convert_stream(const DolphinRvzConvertOptions* options, DolphinRvzDataCb on_input_data)
+{
+    if (!options || !options->input_path)
+        return dolphinrvz_internal::Convert(options, nullptr, nullptr);  // reports the error
+    return ConvertObserved(options, on_input_data, nullptr);
+}
+
+int dolphinrvz_convert_from_source(const DolphinRvzConvertOptions* options, const DolphinRvzSource* source,
+                                   DolphinRvzDataCb on_input_data)
+{
+    using dolphinrvz_internal::SetLastError;
+    if (!options || !source || (!source->read && !source->read_at))
+    {
+        SetLastError("options and a source with read or read_at are required");
+        return -1;
+    }
+    dolphinrvz_internal::EnsureMinimalInit(options->user_dir);
+
+    if (source->read_at)
+    {
+        auto shared = std::make_shared<SourceBlob::Shared>();
+        shared->source = source;
+        const dolphinrvz_internal::OpenInput open_input = [shared]() -> std::unique_ptr<DiscIO::BlobReader> {
+            return std::make_unique<SourceBlob>(shared);
+        };
+        if (on_input_data)
+            return ConvertObserved(options, on_input_data, open_input);
+        return dolphinrvz_internal::Convert(options, nullptr, nullptr, open_input);
+    }
+
+    // Sequential only: the converter needs random access, so spool to a temporary file,
+    // handing the bytes to on_input_data on the way, then convert that file.
+    std::error_code ec;
+    const std::filesystem::path dir =
+        options->user_dir && *options->user_dir ?
+            std::filesystem::path(reinterpret_cast<const char8_t*>(options->user_dir)) :
+            std::filesystem::temp_directory_path(ec);
+    std::filesystem::create_directories(dir, ec);
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path spool = dir / ("dolphinrvz_spool_" + std::to_string(stamp) + ".iso");
+    const std::u8string spool_u8 = spool.u8string();
+    const std::string spool_path(reinterpret_cast<const char*>(spool_u8.c_str()), spool_u8.size());
+
+    int rc = 0;
+    {
+        File::IOFile out(spool_path, "wb");
+        if (!out.IsOpen())
+        {
+            SetLastError("Cannot create the spool file");
+            return -5;
+        }
+        const std::string name = options->input_path ? options->input_path : "";
+        std::vector<u8> buffer(0x80000);
+        u64 pos = 0;
+        while (pos < source->size)
+        {
+            const u64 want = std::min<u64>(buffer.size(), source->size - pos);
+            const int64_t n = source->read(source->user_data, buffer.data(), want);
+            if (n <= 0 || static_cast<u64>(n) > want)
+            {
+                SetLastError("Source read failed");
+                rc = -5;
+                break;
+            }
+            if (!out.WriteBytes(buffer.data(), static_cast<size_t>(n)))
+            {
+                SetLastError("Failed to write the spool file");
+                rc = -5;
+                break;
+            }
+            if (on_input_data &&
+                !on_input_data(0, name.c_str(), pos, buffer.data(), static_cast<u32>(n), options->user_data))
+            {
+                SetLastError("stopped by data callback");
+                rc = -6;
+                break;
+            }
+            pos += static_cast<u64>(n);
+        }
+    }
+    if (rc == 0)
+    {
+        DolphinRvzConvertOptions spooled = *options;
+        spooled.input_path = spool_path.c_str();
+        rc = dolphinrvz_internal::Convert(&spooled, nullptr, nullptr);
+    }
+    File::Delete(spool_path);
+    return rc;
 }
 
 // ---------------------------------------------------------------------------

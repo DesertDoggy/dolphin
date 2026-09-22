@@ -102,7 +102,8 @@ DiscIO::WIARVZCompressionType ToCompressionType(DolphinRvzCompression compressio
 // time and corrupt it (seen as an intermittent crash in _Rb_tree_insert_and_rebalance under
 // RVZPack). Once the cache is non-empty, FindFileInfo only reads it. The volumes hand out
 // the same cached FileSystem objects the converter later uses.
-bool ConvertToWIAOrRVZWarmed(DiscIO::BlobReader* infile, const std::string& infile_path,
+bool ConvertToWIAOrRVZWarmed(DiscIO::BlobReader* infile,
+                       std::unique_ptr<DiscIO::VolumeDisc> infile_volume,
                        const std::string& outfile_path, bool rvz,
                        DiscIO::WIARVZCompressionType compression_type, int compression_level,
                        int chunk_size, const DiscIO::CompressCB& callback)
@@ -114,7 +115,6 @@ bool ConvertToWIAOrRVZWarmed(DiscIO::BlobReader* infile, const std::string& infi
         return false;
     }
 
-    const std::unique_ptr<DiscIO::VolumeDisc> infile_volume = DiscIO::CreateDisc(infile_path);
     if (infile_volume)
     {
         const auto warm = [](const DiscIO::FileSystem* fs) {
@@ -169,9 +169,9 @@ int dolphinrvz_convert(const DolphinRvzConvertOptions* options)
 }
 
 int dolphinrvz_internal::Convert(const DolphinRvzConvertOptions* options, const WrapReader& wrap,
-                                 const bool* external_cancel)
+                                 const bool* external_cancel, const OpenInput& open_input)
 {
-    if (!options || !options->input_path || !*options->input_path)
+    if (!options || (!open_input && (!options->input_path || !*options->input_path)))
     {
         g_last_error = "input_path is required";
         return -1;
@@ -184,11 +184,19 @@ int dolphinrvz_internal::Convert(const DolphinRvzConvertOptions* options, const 
 
     EnsureMinimalInit(options->user_dir);
 
-    const std::string input_path = options->input_path;
+    const std::string input_path =
+        options->input_path && *options->input_path ? options->input_path : "<source>";
     const std::string output_path = options->output_path;
     const DiscIO::BlobType format = ToBlobType(options->format);
 
-    std::unique_ptr<DiscIO::BlobReader> blob_reader = DiscIO::CreateBlobReader(input_path);
+    const auto open_blob = [&]() -> std::unique_ptr<DiscIO::BlobReader> {
+        return open_input ? open_input() : DiscIO::CreateBlobReader(input_path);
+    };
+    const auto open_disc = [&]() -> std::unique_ptr<DiscIO::VolumeDisc> {
+        return open_input ? DiscIO::CreateDisc(open_input()) : DiscIO::CreateDisc(input_path);
+    };
+
+    std::unique_ptr<DiscIO::BlobReader> blob_reader = open_blob();
     if (!blob_reader)
     {
         g_last_error = "The input file could not be opened";
@@ -197,7 +205,7 @@ int dolphinrvz_internal::Convert(const DolphinRvzConvertOptions* options, const 
 
     const bool scrub = options->scrub != 0;
 
-    const std::unique_ptr<DiscIO::VolumeDisc> volume = DiscIO::CreateDisc(input_path);
+    const std::unique_ptr<DiscIO::VolumeDisc> volume = open_disc();
     if (!volume)
     {
         if (scrub)
@@ -207,6 +215,12 @@ int dolphinrvz_internal::Convert(const DolphinRvzConvertOptions* options, const 
         }
         // Not a GC/Wii disc image (e.g. a Wii WAD or raw file) -- DiscIO::ConvertTo*
         // below still handles this fine via the blob_reader alone, same as the CLI.
+    }
+
+    if (scrub && open_input)
+    {
+        g_last_error = "Scrubbing is not supported for source input";
+        return -3;
     }
 
     if (scrub)
@@ -310,7 +324,7 @@ int dolphinrvz_internal::Convert(const DolphinRvzConvertOptions* options, const 
 
     case DiscIO::BlobType::WIA:
     case DiscIO::BlobType::RVZ:
-        success = ConvertToWIAOrRVZWarmed(blob_reader.get(), input_path, output_path,
+        success = ConvertToWIAOrRVZWarmed(blob_reader.get(), open_disc(), output_path,
                                              format == DiscIO::BlobType::RVZ, compression_type,
                                              compression_level, options->block_size, callback);
         break;

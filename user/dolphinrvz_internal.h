@@ -25,8 +25,13 @@ void SetLastError(std::string message);
 using WrapReader =
     std::function<std::unique_ptr<DiscIO::BlobReader>(std::unique_ptr<DiscIO::BlobReader>)>;
 
-// dolphinrvz_convert's implementation. With wrap == nullptr it is dolphinrvz_convert.
-// external_cancel, if non-null, is polled at each progress callback; true cancels (-6).
+// Opens a fresh reader on the input. Replaces opening options->input_path (which then is
+// only a display name and may be NULL) wherever the conversion needs the input.
+using OpenInput = std::function<std::unique_ptr<DiscIO::BlobReader>()>;
+
+// dolphinrvz_convert's implementation. With wrap == nullptr and open_input == nullptr it is
+// dolphinrvz_convert. external_cancel, if non-null, is polled at each progress callback;
+// true cancels (-6).
 int Convert(const DolphinRvzConvertOptions* options, const WrapReader& wrap,
-            const bool* external_cancel);
+            const bool* external_cancel, const OpenInput& open_input = nullptr);
 }  // namespace dolphinrvz_internal
