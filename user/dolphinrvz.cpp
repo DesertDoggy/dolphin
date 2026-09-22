@@ -1,4 +1,5 @@
 #include "dolphinrvz.h"
+#include "dolphinrvz_internal.h"
 
 #include <atomic>
 #include <limits>
@@ -6,6 +7,7 @@
 #include <string>
 
 #include "Common/Config/Config.h"
+#include "Common/DirectIOFile.h"
 #include "Common/FileUtil.h"
 #include "Common/Logging/LogManager.h"
 
@@ -15,6 +17,7 @@
 #include "DiscIO/Blob.h"
 #include "DiscIO/DiscUtils.h"
 #include "DiscIO/Enums.h"
+#include "DiscIO/Filesystem.h"
 #include "DiscIO/ScrubbedBlob.h"
 #include "DiscIO/Volume.h"
 #include "DiscIO/WIABlob.h"
@@ -35,8 +38,9 @@ thread_local std::string g_last_error;
 // starts the logger (INFO_LOG_FMT/ERROR_LOG_FMT etc calls throughout DiscIO/Common
 // otherwise have nowhere to go).
 std::once_flag g_init_once;
+}  // namespace
 
-void EnsureMinimalInit(const char* user_dir)
+void dolphinrvz_internal::EnsureMinimalInit(const char* user_dir)
 {
     std::call_once(g_init_once, [&] {
         UICommon::SetUserDirectory(user_dir && *user_dir ? std::string(user_dir) : std::string());
@@ -47,6 +51,13 @@ void EnsureMinimalInit(const char* user_dir)
     });
 }
 
+void dolphinrvz_internal::SetLastError(std::string message)
+{
+    g_last_error = std::move(message);
+}
+
+namespace
+{
 DiscIO::BlobType ToBlobType(DolphinRvzFormat format)
 {
     switch (format)
@@ -83,6 +94,57 @@ DiscIO::WIARVZCompressionType ToCompressionType(DolphinRvzCompression compressio
     }
 }
 
+// DiscIO::ConvertToWIAOrRVZ (WIABlob.cpp), plus one step before the compressor threads
+// start: building each filesystem's lazy offset->file cache on this thread.
+// FileSystemGCWii::FindFileInfo(u64) fills that cache (a mutable std::map) on first use,
+// unlocked, and RVZ packing calls it from every compressor thread against the same
+// FileSystem objects -- so the first concurrent calls can insert into the map at the same
+// time and corrupt it (seen as an intermittent crash in _Rb_tree_insert_and_rebalance under
+// RVZPack). Once the cache is non-empty, FindFileInfo only reads it. The volumes hand out
+// the same cached FileSystem objects the converter later uses.
+bool ConvertToWIAOrRVZWarmed(DiscIO::BlobReader* infile, const std::string& infile_path,
+                       const std::string& outfile_path, bool rvz,
+                       DiscIO::WIARVZCompressionType compression_type, int compression_level,
+                       int chunk_size, const DiscIO::CompressCB& callback)
+{
+    File::DirectIOFile outfile(outfile_path, File::AccessMode::Write);
+    if (!outfile.IsOpen())
+    {
+        g_last_error = "Failed to open the output file";
+        return false;
+    }
+
+    const std::unique_ptr<DiscIO::VolumeDisc> infile_volume = DiscIO::CreateDisc(infile_path);
+    if (infile_volume)
+    {
+        const auto warm = [](const DiscIO::FileSystem* fs) {
+            if (fs)
+                fs->FindFileInfo(u64{0});
+        };
+        warm(infile_volume->GetFileSystem(DiscIO::PARTITION_NONE));
+        for (const DiscIO::Partition& partition : infile_volume->GetPartitions())
+            warm(infile_volume->GetFileSystem(partition));
+    }
+
+    const auto convert = rvz ? DiscIO::RVZFileReader::Convert : DiscIO::WIAFileReader::Convert;
+    const DiscIO::ConversionResultCode result =
+        convert(infile, infile_volume.get(), &outfile, compression_type, compression_level,
+                chunk_size, callback);
+
+    if (result == DiscIO::ConversionResultCode::ReadFailed)
+        g_last_error = "Failed to read from the input file";
+    else if (result == DiscIO::ConversionResultCode::WriteFailed)
+        g_last_error = "Failed to write the output file";
+
+    if (result != DiscIO::ConversionResultCode::Success)
+    {
+        // Remove the incomplete output file
+        outfile.Close();
+        File::Delete(outfile_path);
+    }
+    return result == DiscIO::ConversionResultCode::Success;
+}
+
 }  // namespace
 
 void dolphinrvz_get_allowed_compression_levels(DolphinRvzCompression compression, int* out_min,
@@ -102,6 +164,12 @@ const char* dolphinrvz_get_last_error(void)
 }
 
 int dolphinrvz_convert(const DolphinRvzConvertOptions* options)
+{
+    return dolphinrvz_internal::Convert(options, nullptr, nullptr);
+}
+
+int dolphinrvz_internal::Convert(const DolphinRvzConvertOptions* options, const WrapReader& wrap,
+                                 const bool* external_cancel)
 {
     if (!options || !options->input_path || !*options->input_path)
     {
@@ -157,6 +225,9 @@ int dolphinrvz_convert(const DolphinRvzConvertOptions* options)
         }
     }
 
+    if (wrap)
+        blob_reader = wrap(std::move(blob_reader));
+
     const bool needs_block_size =
         format == DiscIO::BlobType::GCZ || format == DiscIO::BlobType::WIA || format == DiscIO::BlobType::RVZ;
     if (needs_block_size)
@@ -201,7 +272,12 @@ int dolphinrvz_convert(const DolphinRvzConvertOptions* options)
     DolphinRvzProgressCb progress_cb = options->on_progress;
     void* user_data = options->user_data;
     bool cancelled = false;
-    const DiscIO::CompressCB callback = [progress_cb, user_data, &cancelled](const std::string& text, float percent) {
+    const DiscIO::CompressCB callback = [progress_cb, user_data, &cancelled, external_cancel](const std::string& text, float percent) {
+        if (external_cancel && *external_cancel)
+        {
+            cancelled = true;
+            return false;
+        }
         if (!progress_cb)
             return true;
         const bool keep_going = progress_cb(text.c_str(), percent * 100.0f, user_data) != 0;
@@ -234,7 +310,7 @@ int dolphinrvz_convert(const DolphinRvzConvertOptions* options)
 
     case DiscIO::BlobType::WIA:
     case DiscIO::BlobType::RVZ:
-        success = DiscIO::ConvertToWIAOrRVZ(blob_reader.get(), input_path, output_path,
+        success = ConvertToWIAOrRVZWarmed(blob_reader.get(), input_path, output_path,
                                              format == DiscIO::BlobType::RVZ, compression_type,
                                              compression_level, options->block_size, callback);
         break;

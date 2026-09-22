@@ -12,11 +12,37 @@ set -euo pipefail
 # Usage:
 #   user/scripts/build_dolphin_rvz.sh                    # auto-detect host platform/arch
 #   user/scripts/build_dolphin_rvz.sh <platform> <arch>
+#   user/scripts/build_dolphin_rvz.sh --streaming [<platform> <arch>]
+#
+# --streaming builds the dolphinrvz_streaming target instead (the same library plus
+# user/dolphinrvz_stream.cpp: dolphinrvz_extract_stream, dolphinrvz_convert_stream and the
+# dolphinrvz_reader_* API -- see dolphinrvz.h) and installs it to
+# user/release/with_streaming/<platform>/<arch>/<version>/. It shares this build tree with
+# the default target (both link the same Dolphin static libraries), so it doesn't rebuild
+# Dolphin, and the default target's sources, flags, exports and output path are unchanged.
 #
 # Targets:
 #   windows/x64   linux/x64   mac/arm64   android/arm64   ios/arm64 (experimental)
 #
 # Prerequisites: see user/README.dolphinrvz.md.
+
+streaming=0
+args=()
+for arg in "$@"; do
+  case "$arg" in
+    --streaming) streaming=1 ;;
+    *) args+=("$arg") ;;
+  esac
+done
+set -- ${args[@]+"${args[@]}"}
+
+if (( streaming )); then
+  cmake_target="dolphinrvz_streaming"
+  variant_dir="with_streaming/"
+else
+  cmake_target="dolphinrvz"
+  variant_dir=""
+fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 user_dir="$(cd "$script_dir/.." && pwd)"
@@ -40,7 +66,7 @@ elif [[ $# -eq 2 ]]; then
   platform="$1"
   arch="$2"
 else
-  echo "[ERROR] Usage: $0 OR $0 <platform> <arch>" >&2
+  echo "[ERROR] Usage: $0 [--streaming] OR $0 [--streaming] <platform> <arch>" >&2
   exit 2
 fi
 
@@ -59,11 +85,11 @@ log_dir="$user_dir/logs"
 mkdir -p "$log_dir"
 log_file="$log_dir/build-dolphinrvz-$platform-$arch-$(date +%Y%m%d-%H%M%S).log"
 
-echo "[INFO] platform=$platform arch=$arch version=$version" | tee -a "$log_file"
+echo "[INFO] platform=$platform arch=$arch version=$version streaming=$streaming" | tee -a "$log_file"
 
 build_dir="$user_dir/_build/$platform/$arch"
-out_dir="$user_dir/release/$platform/$arch/$version/dynamic"
-include_dir="$user_dir/release/$platform/$arch/$version/include"
+out_dir="$user_dir/release/${variant_dir}$platform/$arch/$version/dynamic"
+include_dir="$user_dir/release/${variant_dir}$platform/$arch/$version/include"
 mkdir -p "$build_dir" "$out_dir" "$include_dir"
 
 # -S points at dolphin/ itself (not user/): dolphin's own CMake code assumes it is always
@@ -231,8 +257,8 @@ if [[ "$platform" == "windows" ]]; then
     echo "echo [INFO] Configuring ..."
     echo "\"$vs_cmake_exe\" -S \"$win_submodule_root\" -B \"$win_build_dir\" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PROJECT_INCLUDE=\"$win_project_include\" -DDOLPHINRVZ_USER_DIR=\"$win_user_dir\" -G Ninja -DCMAKE_MAKE_PROGRAM=\"$vs_ninja_exe\" -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl"
     echo "if errorlevel 1 exit /b 1"
-    echo "echo [INFO] Building dolphinrvz ..."
-    echo "\"$vs_cmake_exe\" --build \"$win_build_dir\" --target dolphinrvz --config Release -j$jobs"
+    echo "echo [INFO] Building $cmake_target ..."
+    echo "\"$vs_cmake_exe\" --build \"$win_build_dir\" --target $cmake_target --config Release -j$jobs"
   } > "$tmp_bat"
 
   # MSYS2_ARG_CONV_EXCL="/c": without it, MSYS2's argv-to-Windows path translation sees
@@ -253,8 +279,8 @@ else
   echo "[INFO] Configuring ..." | tee -a "$log_file"
   cmake "${cmake_args[@]}" 2>&1 | tee -a "$log_file"
 
-  echo "[INFO] Building dolphinrvz ..." | tee -a "$log_file"
-  cmake --build "$build_dir" --target dolphinrvz --config Release -j"$jobs" 2>&1 | tee -a "$log_file"
+  echo "[INFO] Building $cmake_target ..." | tee -a "$log_file"
+  cmake --build "$build_dir" --target "$cmake_target" --config Release -j"$jobs" 2>&1 | tee -a "$log_file"
 fi
 
 case "$platform" in
@@ -263,7 +289,13 @@ case "$platform" in
   *) built_name="libdolphinrvz.so" ;;
 esac
 
-built_path="$(find "$build_dir" -iname "$built_name" -print -quit 2>/dev/null)"
+# Both targets produce the same file name: the streaming one only ever lives under
+# with_streaming/ (see dolphinrvz_target.cmake), and the default one never does.
+if (( streaming )); then
+  built_path="$(find "$build_dir/with_streaming" -iname "$built_name" -print -quit 2>/dev/null)"
+else
+  built_path="$(find "$build_dir" -path "$build_dir/with_streaming" -prune -o -iname "$built_name" -print -quit 2>/dev/null)"
+fi
 if [[ -z "$built_path" ]]; then
   echo "[ERROR] Build did not produce $built_name under $build_dir" | tee -a "$log_file"
   exit 5

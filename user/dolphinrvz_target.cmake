@@ -14,14 +14,24 @@
 # frontend to implement (update window title, report focus state, etc) -- confirmed
 # directly: the official dolphin-tool CLI satisfies these the same way, by compiling in
 # this exact no-op stub file rather than defining its own.
-add_library(dolphinrvz SHARED
+#
+# Two targets share everything below: dolphinrvz (the default library) and
+# dolphinrvz_streaming (the same plus user/dolphinrvz_stream.cpp and
+# -DDOLPHINRVZ_WITH_STREAMING -- see dolphinrvz.h). Both link the same already-built
+# discio/uicommon static libraries from this one build tree, so building the streaming
+# variant never rebuilds Dolphin, and the default target is unaffected by its existence.
+# The streaming library is also named dolphinrvz, in its own with_streaming/ output dir.
+function(dolphinrvz_add_library name)
+add_library(${name} SHARED
   ${DOLPHINRVZ_USER_DIR}/dolphinrvz.cpp
   ${DOLPHINRVZ_USER_DIR}/dolphinrvz.h
+  ${DOLPHINRVZ_USER_DIR}/dolphinrvz_internal.h
   ${CMAKE_SOURCE_DIR}/Source/Core/DolphinTool/ToolHeadlessPlatform.cpp
+  ${ARGN}
 )
 
-target_include_directories(dolphinrvz PRIVATE ${DOLPHINRVZ_USER_DIR})
-target_compile_definitions(dolphinrvz PRIVATE DOLPHINRVZ_BUILDING_DLL)
+target_include_directories(${name} PRIVATE ${DOLPHINRVZ_USER_DIR})
+target_compile_definitions(${name} PRIVATE DOLPHINRVZ_BUILDING_DLL)
 
 # Source/CMakeLists.txt sets these via add_definitions() (directory-scoped) for
 # everything under add_subdirectory(Source) -- discio/uicommon/core included. dolphinrvz
@@ -31,7 +41,7 @@ target_compile_definitions(dolphinrvz PRIVATE DOLPHINRVZ_BUILDING_DLL)
 # <windows.h>'s max() macro; without UNICODE/_UNICODE, Common/StringUtil.h's Windows
 # code paths pick different overloads than the rest of Dolphin was built with).
 if(CMAKE_SYSTEM_NAME MATCHES "Windows")
-  target_compile_definitions(dolphinrvz PRIVATE
+  target_compile_definitions(${name} PRIVATE
     NOMINMAX
     UNICODE
     _UNICODE
@@ -51,7 +61,7 @@ endif()
 # DiscIO/WIABlob.h and Common/StringUtil.h fail to compile under GCC's default -std=gnu++20,
 # since MultithreadedCompressor.h's std::expected and StringUtil.h's std::to_underlying are
 # both C++23-only).
-set_target_properties(dolphinrvz PROPERTIES
+set_target_properties(${name} PROPERTIES
   CXX_STANDARD 23
   CXX_STANDARD_REQUIRED ON
   CXX_EXTENSIONS OFF
@@ -59,7 +69,7 @@ set_target_properties(dolphinrvz PROPERTIES
   VISIBILITY_INLINES_HIDDEN ON
 )
 
-target_link_libraries(dolphinrvz PRIVATE
+target_link_libraries(${name} PRIVATE
   discio
   uicommon
   fmt::fmt
@@ -74,5 +84,17 @@ target_link_libraries(dolphinrvz PRIVATE
 # the PCH's compile-time savings, so it's simplest to just not use it here.
 
 if(APPLE)
-  set_target_properties(dolphinrvz PROPERTIES INSTALL_NAME_DIR "@rpath")
+  set_target_properties(${name} PROPERTIES INSTALL_NAME_DIR "@rpath")
 endif()
+endfunction()
+
+dolphinrvz_add_library(dolphinrvz)
+
+dolphinrvz_add_library(dolphinrvz_streaming ${DOLPHINRVZ_USER_DIR}/dolphinrvz_stream.cpp)
+target_compile_definitions(dolphinrvz_streaming PRIVATE DOLPHINRVZ_WITH_STREAMING)
+set_target_properties(dolphinrvz_streaming PROPERTIES
+  OUTPUT_NAME dolphinrvz
+  LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/with_streaming
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/with_streaming
+  ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/with_streaming
+)
