@@ -111,7 +111,7 @@ DOLPHINRVZ_API void dolphinrvz_get_allowed_compression_levels(DolphinRvzCompress
 #ifdef DOLPHINRVZ_WITH_STREAMING
 /*
  * ---------------------------------------------------------------------------------------
- * Streaming build only (user/scripts/build_dolphin_rvz.sh's default). A library exports
+ * Streaming build only (user/scripts/build_dolphin_rvz.sh --streaming). A library exports
  * these iff it was built that way, so callers detect support by looking up
  * dolphinrvz_extract_stream / dolphinrvz_reader_open. Failures set
  * dolphinrvz_get_last_error() like dolphinrvz_convert does.

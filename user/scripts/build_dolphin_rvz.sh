@@ -12,13 +12,14 @@ set -euo pipefail
 # Usage:
 #   user/scripts/build_dolphin_rvz.sh                    # auto-detect host platform/arch
 #   user/scripts/build_dolphin_rvz.sh <platform> <arch>
-#   user/scripts/build_dolphin_rvz.sh --streaming [<platform> <arch>]
+#   user/scripts/build_dolphin_rvz.sh --nostreaming [<platform> <arch>]
 #
-# --streaming builds the dolphinrvz_streaming target instead (the same library plus
-# user/dolphinrvz_stream.cpp: dolphinrvz_extract_stream, dolphinrvz_convert_stream and the
-# dolphinrvz_reader_* API -- see dolphinrvz.h) and installs it to
-# user/release/with_streaming/<platform>/<arch>/<version>/. It shares this build tree with
-# the default target (both link the same Dolphin static libraries), so it doesn't rebuild
+# Builds the dolphinrvz_streaming target by default (--nostreaming builds the plain
+# dolphinrvz target; --streaming is still accepted, as a no-op). The streaming target is the
+# same library plus user/dolphinrvz_stream.cpp (dolphinrvz_extract_stream,
+# dolphinrvz_convert_stream and the dolphinrvz_reader_* API -- see dolphinrvz.h), installed
+# to user/release/with_streaming/<platform>/<arch>/<version>/. It shares this build tree with
+# the plain target (both link the same Dolphin static libraries), so it doesn't rebuild
 # Dolphin, and the default target's sources, flags, exports and output path are unchanged.
 #
 # Targets:
@@ -26,11 +27,12 @@ set -euo pipefail
 #
 # Prerequisites: see user/README.dolphinrvz.md.
 
-streaming=0
+streaming=1
 args=()
 for arg in "$@"; do
   case "$arg" in
     --streaming) streaming=1 ;;
+    --nostreaming) streaming=0 ;;
     *) args+=("$arg") ;;
   esac
 done
@@ -66,7 +68,7 @@ elif [[ $# -eq 2 ]]; then
   platform="$1"
   arch="$2"
 else
-  echo "[ERROR] Usage: $0 [--streaming] OR $0 [--streaming] <platform> <arch>" >&2
+  echo "[ERROR] Usage: $0 [--nostreaming] OR $0 [--nostreaming] <platform> <arch>" >&2
   exit 2
 fi
 

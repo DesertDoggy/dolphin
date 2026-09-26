@@ -1,4 +1,4 @@
-/* Functional test for the dolphinrvz streaming build (build_dolphin_rvz.sh --streaming).
+/* Functional test for the dolphinrvz streaming build (build_dolphin_rvz.sh's default).
  *
  * Usage: dolphin_stream_test <streaming lib> <default lib> <input disc image> <scratch dir>
  *                            [official dolphin-tool executable]
