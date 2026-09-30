@@ -39,6 +39,12 @@ set(ENABLE_ANALYTICS OFF CACHE BOOL "" FORCE)
 set(USE_RETRO_ACHIEVEMENTS OFF CACHE BOOL "" FORCE)
 set(USE_MGBA OFF CACHE BOOL "" FORCE)
 set(DSPTOOL OFF CACHE BOOL "" FORCE)
+# Controller input (evdev) and the hardware database are the only users of libudev, which
+# CMake otherwise finds REQUIRED on Linux; dolphinrvz reads discs and touches neither. Off,
+# so a Linux build (and an arm64 cross build, which would need libudev-dev:arm64) does not
+# need udev development headers at all.
+set(ENABLE_EVDEV OFF CACHE BOOL "" FORCE)
+set(ENABLE_HWDB OFF CACHE BOOL "" FORCE)
 
 # NOTE: CMAKE_CURRENT_LIST_DIR is NOT used here -- CMAKE_PROJECT_INCLUDE is spliced in by
 # a mechanism that leaves it pointing at dolphin/ (the top-level project's directory)

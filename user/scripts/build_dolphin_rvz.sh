@@ -73,10 +73,10 @@ else
 fi
 
 case "$platform/$arch" in
-  windows/x64|linux/x64|mac/arm64|android/arm64|ios/arm64) ;;
+  windows/x64|windows/arm64|linux/x64|linux/arm64|mac/arm64|android/arm64|ios/arm64) ;;
   *)
     echo "[ERROR] Unsupported platform/arch combination: $platform/$arch" >&2
-    echo "[ERROR] Supported: windows/x64 linux/x64 mac/arm64 android/arm64 ios/arm64" >&2
+    echo "[ERROR] Supported: windows/x64 windows/arm64 linux/x64 linux/arm64 mac/arm64 android/arm64 ios/arm64" >&2
     exit 2
     ;;
 esac
@@ -182,9 +182,40 @@ case "$platform" in
     echo "[INFO] Using VS-bundled cmake: $vs_cmake_exe" | tee -a "$log_file"
     echo "[INFO] Using VS-bundled ninja: $vs_ninja_exe" | tee -a "$log_file"
     [[ -n "$native_git_dir" ]] && echo "[INFO] Using native git: $native_git_dir\\git.exe" | tee -a "$log_file"
+    # arm64: cross from an x64 host via vcvarsall x64_arm64, native on an arm64 one. The
+    # explicit CMAKE_SYSTEM_PROCESSOR matters -- Dolphin picks its JIT/codegen and SIMD
+    # paths from it, and without CMAKE_SYSTEM_NAME CMake reports the *host's* AMD64.
+    win_arch_defs=""
+    if [[ "$arch" == "arm64" ]]; then
+      if [[ "${PROCESSOR_ARCHITECTURE:-}" == "ARM64" ]]; then vcvars_arch="arm64"; else vcvars_arch="x64_arm64"; fi
+      win_arch_defs=" -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=ARM64"
+    else
+      vcvars_arch="x64"
+    fi
+    echo "[INFO] vcvarsall arch: $vcvars_arch" | tee -a "$log_file"
     ;;
   linux)
     cmake_args+=(-G Ninja)
+    # linux/arm64 from a non-arm64 host: the GNU aarch64 cross compilers (apt:
+    # g++-aarch64-linux-gnu), find root on their sysroot so no x86_64 host library leaks in.
+    # Dolphin bundles every dependency dolphinrvz needs under Externals/, so nothing else
+    # has to exist for arm64. LINUX_ARM64_TOOLCHAIN_FILE overrides all of it.
+    if [[ "$arch" == "arm64" ]]; then
+      case "$(uname -m)" in arm64|aarch64) host_is_arm64=1 ;; *) host_is_arm64=0 ;; esac
+      if [[ -n "${LINUX_ARM64_TOOLCHAIN_FILE:-}" ]]; then
+        cmake_args+=(-DCMAKE_TOOLCHAIN_FILE="$LINUX_ARM64_TOOLCHAIN_FILE")
+      elif (( ! host_is_arm64 )) || [[ -n "${LINUX_ARM64_CROSS_PREFIX:-}" ]]; then
+        prefix="${LINUX_ARM64_CROSS_PREFIX:-aarch64-linux-gnu-}"
+        command -v "${prefix}g++" >/dev/null 2>&1 || { echo "[ERROR] ${prefix}g++ not found. Install g++-aarch64-linux-gnu (or set LINUX_ARM64_TOOLCHAIN_FILE)." >&2; exit 3; }
+        cmake_args+=(
+          -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64
+          -DCMAKE_C_COMPILER="${prefix}gcc" -DCMAKE_CXX_COMPILER="${prefix}g++"
+          -DCMAKE_FIND_ROOT_PATH="/usr/${prefix%-}"
+          -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY
+          -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY
+        )
+      fi
+    fi
     ;;
   mac)
     cmake_args+=(-G Ninja -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0)
@@ -255,9 +286,9 @@ if [[ "$platform" == "windows" ]]; then
     # neutering pkg-config alone doesn't stop it either.) A clean PATH avoids the whole
     # class of problem at the source instead of chasing each dependency that hits it.
     echo "set \"PATH=C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem;C:\\Windows\\System32\\WindowsPowerShell\\v1.0;C:\\Windows\\System32\\OpenSSH;$vs_cmake_dir;$vs_ninja_dir${native_git_dir:+;$native_git_dir}\""
-    echo "call \"$vcvarsall\" x64 >nul 2>&1"
+    echo "call \"$vcvarsall\" $vcvars_arch >nul 2>&1"
     echo "echo [INFO] Configuring ..."
-    echo "\"$vs_cmake_exe\" -S \"$win_submodule_root\" -B \"$win_build_dir\" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PROJECT_INCLUDE=\"$win_project_include\" -DDOLPHINRVZ_USER_DIR=\"$win_user_dir\" -G Ninja -DCMAKE_MAKE_PROGRAM=\"$vs_ninja_exe\" -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl"
+    echo "\"$vs_cmake_exe\" -S \"$win_submodule_root\" -B \"$win_build_dir\" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PROJECT_INCLUDE=\"$win_project_include\" -DDOLPHINRVZ_USER_DIR=\"$win_user_dir\" -G Ninja -DCMAKE_MAKE_PROGRAM=\"$vs_ninja_exe\" -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl$win_arch_defs"
     echo "if errorlevel 1 exit /b 1"
     echo "echo [INFO] Building $cmake_target ..."
     echo "\"$vs_cmake_exe\" --build \"$win_build_dir\" --target $cmake_target --config Release -j$jobs"
