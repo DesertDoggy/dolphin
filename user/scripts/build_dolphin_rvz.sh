@@ -81,7 +81,7 @@ case "$platform/$arch" in
     ;;
 esac
 
-version="$(git -C "$submodule_root" describe --tags 2>/dev/null || git -C "$submodule_root" rev-parse --short HEAD 2>/dev/null || echo dev)"
+version="$(git -C "$submodule_root" describe --tags 2>/dev/null || date +%Y%m%d-%H%M%S)"
 
 log_dir="$user_dir/logs"
 mkdir -p "$log_dir"
