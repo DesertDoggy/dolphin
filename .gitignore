@@ -50,3 +50,4 @@ CMakeLists.txt.user
 CMakeUserPresets.json
 /user/_build
 /user/logs
+/user/release
