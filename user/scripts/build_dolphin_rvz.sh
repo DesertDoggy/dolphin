@@ -219,6 +219,14 @@ case "$platform" in
     ;;
   mac)
     cmake_args+=(-G Ninja -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0)
+    # No SDL at all. It is only Dolphin's generic controller backend, which a disc-image
+    # library never touches, and both ways of keeping it are wrong here: left on, a Homebrew
+    # sdl3 that happens to be installed gets linked by absolute path
+    # (/opt/homebrew/opt/sdl3/lib/libSDL3.0.dylib), so the library loads only on machines
+    # that also have it; forced to the bundled static one (USE_SYSTEM_SDL3=OFF), its own
+    # copy of hidapi collides with Externals/hidapi -- "ld: 4 duplicate symbols"
+    # (_hid_darwin_*) when everything is linked into one dylib.
+    cmake_args+=(-DENABLE_SDL=OFF)
     ;;
   android)
     : "${ANDROID_NDK_HOME:?[ERROR] ANDROID_NDK_HOME must point to an installed Android NDK (r26+)}"
